@@ -1,13 +1,9 @@
-# app.py — COMPLETE BATCH TRANSCRIBER (CLOUD RUN AGENT INTEGRATION)
+# app.py — COMPLETE BATCH TRANSCRIBER (ASYNC POLLING + CHAT UI)
 # -----------------------------------------------------------------------------
 # FEATURES:
-# 1. Multi-file Excel Upload (Merges multiple files).
-# 2. INTEGRATED: Custom Browser-Agent API (Cloud Run).
-# 3. Unique Mobile Number Logic (Processes each contact only once).
-# 4. Latest Recording Priority (Always picks the most recent valid audio).
-# 5. Outcome History Fallback (Compiles outcomes if no audio exists).
-# 6. High Concurrency (Slider up to 128 workers).
-# 7. Robust MIME Detection & Retries.
+# 1. ASYNC ARCHITECTURE: Submits Job -> Polls Status (Solves 429 Errors).
+# 2. CHAT UI: Modern, color-coded bubbles for easy reading.
+# 3. ROBUSTNESS: Automatic retries, MIME detection, Resumable logic.
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -42,57 +38,99 @@ logging.basicConfig(
 )
 logger = logging.getLogger("transcriber")
 
-# --- UI STYLING (CSS) ---
+# --- UI STYLING (MODERN CHAT LOOK) ---
 BASE_CSS = """
 <style>
-/* Card look for transcript entries */
+/* Main Container */
+.main { background-color: var(--bg-color); }
+
+/* Card Styling */
 .call-card {
-    border: 1px solid var(--border-color, #e6e6e6);
-    border-radius: 10px;
-    padding: 12px;
-    margin-bottom: 12px;
-    background: var(--card-bg, #fff);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+    background: var(--card-bg);
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
 }
 
-/* Transcript scroll area */
+/* Transcript Container */
 .transcript-box {
-    max-height: 320px;
-    overflow: auto;
-    padding: 8px;
-    border-radius: 6px;
-    background: var(--transcript-bg, #fafafa);
-    border: 1px solid var(--border-color, #eee);
-    font-family: monospace; 
-    white-space: pre-wrap; 
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 15px;
+    border-radius: 8px;
+    background: var(--transcript-bg);
+    border: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
 }
 
-/* Speaker colors for Diarization */
-.speaker1 { color: #1f77b4; font-weight: 600; display: block; margin-bottom: 4px; }
-.speaker2 { color: #d62728; font-weight: 600; display: block; margin-bottom: 4px; }
-.other-speech { color: #333; display: block; margin-bottom: 4px; }
+/* Chat Bubbles */
+.chat-bubble {
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    max-width: 90%;
+    position: relative;
+    font-family: 'Source Sans Pro', sans-serif;
+}
 
-/* Compact metadata row */
-.meta-row { font-size: 13px; color: var(--meta-color, #666); margin-bottom: 8px; }
+/* Agent (Left, Blueish) */
+.agent-bubble {
+    align-self: flex-start;
+    background-color: #e3f2fd;
+    color: #0d47a1;
+    border-bottom-left-radius: 2px;
+}
 
-/* Theming variables */
+/* Customer (Right, Greenish) */
+.customer-bubble {
+    align-self: flex-end;
+    background-color: #e8f5e9;
+    color: #1b5e20;
+    border-bottom-right-radius: 2px;
+}
+
+/* Unknown/Other (Gray) */
+.other-bubble {
+    align-self: center;
+    background-color: #f5f5f5;
+    color: #424242;
+    font-style: italic;
+    width: 100%;
+    text-align: center;
+}
+
+/* Timestamp Label */
+.bubble-meta {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    opacity: 0.7;
+    text-transform: uppercase;
+}
+
+/* Dark Mode Overrides */
+.dark-theme .agent-bubble { background-color: #1e3a5f; color: #bbdefb; }
+.dark-theme .customer-bubble { background-color: #1b4d3e; color: #c8e6c9; }
+.dark-theme .other-bubble { background-color: #333; color: #bbb; }
+.dark-theme .transcript-box { background: #0e1117; border-color: #262730; }
+
+/* Theming Variables */
 .dark-theme {
-    --card-bg: #0f1115;
-    --transcript-bg: #0b0c0f;
-    --border-color: #222428;
-    --meta-color: #9aa0a6;
-    color: #e6eef3;
+    --card-bg: #1f2937;
+    --transcript-bg: #111827;
+    --border-color: #374151;
 }
 .light-theme {
     --card-bg: #ffffff;
-    --transcript-bg: #fafafa;
-    --border-color: #e6e6e6;
-    --meta-color: #666666;
-    color: #111;
+    --transcript-bg: #f9fafb;
+    --border-color: #e5e7eb;
 }
-
-/* Search box styling */
-.search-box { margin-bottom: 10px; padding: 6px; border-radius: 6px; border: 1px solid var(--border-color, #eee); width:100%; }
 </style>
 """
 
@@ -103,112 +141,79 @@ st.markdown(BASE_CSS, unsafe_allow_html=True)
 # --- NETWORK UTILITIES ---
 
 def _sleep_with_jitter(base_seconds: float, attempt: int):
-    """
-    Sleeps for a random amount of time to prevent thundering herd problems.
-    """
     jitter = random.uniform(0.5, 1.5)
     to_sleep = min(base_seconds * (2 ** attempt) * jitter, 30)
     time.sleep(to_sleep)
 
 def make_request_with_retry(method: str, url: str, max_retries: int = 5, backoff_base: float = 0.5, timeout: int = 60, **kwargs) -> requests.Response:
-    """
-    Robust wrapper for requests with exponential backoff + jitter.
-    """
     last_exc = None
     for attempt in range(max_retries):
         try:
             resp = requests.request(method, url, timeout=timeout, **kwargs)
-            # Treat 429 and 5xx as transient errors
             if resp.status_code == 429 or (500 <= resp.status_code < 600):
-                logger.warning("Transient HTTP %s from %s (attempt %d). Retrying...", resp.status_code, url, attempt + 1)
+                logger.warning(f"Transient HTTP {resp.status_code}. Retrying...")
                 _sleep_with_jitter(backoff_base, attempt)
                 continue
             return resp
         except requests.exceptions.RequestException as e:
-            logger.warning("RequestException on %s %s: %s (attempt %d)", method, url, str(e), attempt + 1)
+            logger.warning(f"Network error: {e}. Retrying...")
             last_exc = e
             _sleep_with_jitter(backoff_base, attempt)
     
-    if last_exc:
-        raise last_exc
-    raise Exception("make_request_with_retry: retries exhausted without a response")
+    if last_exc: raise last_exc
+    raise Exception("make_request_with_retry failed")
 
 
-# --- MIME TYPE & FILE EXTENSION HANDLING ---
+# --- MIME TYPE DETECTION ---
 
 COMMON_AUDIO_MIME = {
-    ".mp3": "audio/mpeg",
-    ".wav": "audio/wave",
-    ".m4a": "audio/mp4",
-    ".aac": "audio/aac",
-    ".ogg": "audio/ogg",
-    ".oga": "audio/ogg",
-    ".webm": "audio/webm",
-    ".flac": "audio/flac"
+    ".mp3": "audio/mpeg", ".wav": "audio/wave", ".m4a": "audio/mp4",
+    ".aac": "audio/aac", ".ogg": "audio/ogg", ".webm": "audio/webm", ".flac": "audio/flac"
 }
 
 def detect_extension_and_mime(url_path: str, header_content_type: Optional[str]) -> (str, str):
-    """
-    Determine extension and mime type from URL path and header.
-    """
     _, ext = os.path.splitext(url_path or "")
     ext = ext.lower()
     
-    # 1. Trust extension if it is a known audio type
     if ext and ext in COMMON_AUDIO_MIME:
         return ext, COMMON_AUDIO_MIME[ext]
     
-    # 2. Try header Content-Type
     if header_content_type:
         ctype = header_content_type.split(";")[0].strip()
         for k, v in COMMON_AUDIO_MIME.items():
-            if v == ctype:
-                return k, ctype
-        
-        guessed_ext = mimetypes.guess_extension(ctype)
-        if guessed_ext:
-            return guessed_ext.lower(), ctype
+            if v == ctype: return k, ctype
+        guessed = mimetypes.guess_extension(ctype)
+        if guessed: return guessed.lower(), ctype
             
-    # 3. Last fallback
     return ".mp3", "audio/mpeg"
 
 
 # --- PROMPT BUILDER ---
 
 def build_prompt(language_label: str) -> str:
-    """
-    Constructs the system prompt for strict diarization and formatting.
-    """
     return f"""
 Transcribe this call in Hindi and English exactly as spoken.
 
-SPEAKER IDENTIFICATION RULES:
-1. Identify AGENT vs CUSTOMER contextually.
-2. Use labels 'Agent:' and 'Customer:' (fallback to Speaker 1/2 if unclear).
-3. MAINTAIN CONSISTENCY.
+SPEAKER RULES:
+1. Identify 'Agent:' vs 'Customer:' contextually.
+2. Use EXACTLY these labels: 'Agent:', 'Customer:'.
+3. If unclear, fallback to 'Speaker 1:', 'Speaker 2:'.
 
-FORMATTING:
-- [0ms-1500ms] Label: Dialogue
-- Raw milliseconds for timestamps.
-- Separate speakers onto new lines.
+FORMAT:
+[0ms-1500ms] Agent: Hello sir.
+[1500ms-3000ms] Customer: Hi I need help.
 
 LANGUAGE:
-- Hindi words in Hinglish (Latin script).
-- NO Devanagari.
+- Hindi words in Hinglish (Latin script). NO Devanagari.
 - Context: {language_label}
 
-Return ONLY the transcript text.
+Return ONLY the transcript.
 """
 
 
-# --- DATA CONSOLIDATION LOGIC ---
+# --- DATA CONSOLIDATION ---
 
 def consolidate_data_by_mobile(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Consolidates data to ensure unique mobile number processing.
-    Picks latest recording OR compiles outcome history.
-    """
-    # Ensure date column is datetime
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.sort_values(by=['mobile_number', 'date'], ascending=[True, False])
@@ -218,135 +223,111 @@ def consolidate_data_by_mobile(df: pd.DataFrame) -> pd.DataFrame:
 
     for mobile in unique_mobiles:
         group = df[df['mobile_number'] == mobile]
+        valid_rows = group[group['recording_url'].notna() & (group['recording_url'] != "")]
         
-        # Valid recordings
-        valid_recording_rows = group[group['recording_url'].notna() & (group['recording_url'] != "")]
-        
-        if not valid_recording_rows.empty:
-            # Case A: Audio Exists (Pick latest)
-            selected_row = valid_recording_rows.iloc[0].copy()
-            selected_row['processing_action'] = 'TRANSCRIBE'
+        if not valid_rows.empty:
+            row = valid_rows.iloc[0].copy()
+            row['processing_action'] = 'TRANSCRIBE'
         else:
-            # Case B: Fallback to History
-            selected_row = group.iloc[0].copy()
-            selected_row['processing_action'] = 'SKIP'
-            
+            row = group.iloc[0].copy()
+            row['processing_action'] = 'SKIP'
             outcomes = group['outcome'].fillna("").astype(str).tolist()
-            outcome_history = " ".join([x.strip() for x in outcomes if x.strip()])
-            
-            selected_row['transcript'] = f"Outcomes: {outcome_history}"
-            selected_row['status'] = '⚠️ Skipped (No Audio)'
-            selected_row['error'] = 'No recording_url found in history'
+            history = " | ".join([x.strip() for x in outcomes if x.strip()])
+            row['transcript'] = f"No Audio. History: {history}"
+            row['status'] = '⚠️ Skipped'
+            row['error'] = 'No recording found'
         
-        final_rows.append(selected_row)
+        final_rows.append(row)
     
     return pd.DataFrame(final_rows).reset_index(drop=True)
 
 
-# --- WORKER / PROCESSING FUNCTION ---
+# --- CORE: ASYNC WORKER (SUBMIT -> POLL) ---
 
 def process_single_row(index: int, row: pd.Series, prompt_template: str) -> Dict[str, Any]:
-    """
-    Worker function. Downloads audio and sends to Custom Cloud Run API.
-    """
     mobile = str(row.get("mobile_number", "Unknown"))
-    
     result = {
-        "index": index,
-        "mobile_number": mobile,
+        "index": index, 
+        "mobile_number": mobile, 
         "recording_url": row.get("recording_url"),
-        "transcript": row.get("transcript", ""),
-        "status": row.get("status", "Pending"),
-        "error": row.get("error", None),
+        "transcript": row.get("transcript", ""), 
+        "status": row.get("status", "Pending"), 
+        "error": row.get("error", None)
     }
 
-    # SKIP logic from consolidation
     if row.get("processing_action") == "SKIP":
         return result
 
     audio_url = row.get("recording_url")
-    if not audio_url or not isinstance(audio_url, str):
-        result.update({"status": "❌ Failed", "error": "Invalid URL"})
-        return result
-
     tmp_path = None
 
     try:
-        # 1. Download File
+        # 1. Download
         parsed = urlparse(audio_url)
         r = make_request_with_retry("GET", audio_url, stream=True)
-        
-        if r.status_code != 200:
-            raise Exception(f"Audio download failed ({r.status_code})")
+        if r.status_code != 200: raise Exception(f"Download failed: {r.status_code}")
 
-        header_ct = r.headers.get("content-type", "")
-        ext, mime_type = detect_extension_and_mime(parsed.path, header_ct)
+        ext, mime = detect_extension_and_mime(parsed.path, r.headers.get("content-type"))
         expected_size = r.headers.get("content-length")
 
-        # Save to temp
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             for chunk in r.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
                 if chunk: tmp.write(chunk)
             tmp_path = tmp.name
 
-        file_size = os.path.getsize(tmp_path)
-        
-        # Integrity Check
-        if expected_size:
-            if file_size < int(expected_size):
-                raise Exception(f"Incomplete download: Expected {expected_size} bytes, got {file_size}")
+        if expected_size and os.path.getsize(tmp_path) < int(expected_size):
+            raise Exception("Incomplete download")
 
-        # 2. Send to Custom Cloud Run API (with Retry)
-        # We try up to 3 times to handle browser glitches on the server side
-        max_api_retries = 3
-        transcript_text = None
+        # 2. SUBMIT JOB (Async)
+        job_id = None
+        with open(tmp_path, "rb") as f:
+            files = {'file': (f"audio{ext}", f, mime)}
+            data = {'provider': 'gemini', 'prompt': prompt_template}
+            
+            # This returns instantly (202 Accepted)
+            sub_resp = requests.post(CUSTOM_API_URL, files=files, data=data, timeout=30)
+            
+            if sub_resp.status_code == 202:
+                job_id = sub_resp.json().get("jobId")
+            else:
+                raise Exception(f"Submission Error {sub_resp.status_code}: {sub_resp.text}")
+
+        # 3. POLL FOR RESULTS
+        # We poll the endpoint /ask/{job_id} until completion
+        start_time = time.time()
+        poll_url = f"{CUSTOM_API_URL.rstrip('/ask')}/ask/{job_id}" # ensures correct path
         
-        for attempt in range(max_api_retries):
-            with open(tmp_path, "rb") as f:
-                # Prepare Multipart Upload
-                files = {
-                    'file': (f"audio{ext}", f, mime_type)
-                }
-                data = {
-                    'provider': 'gemini',
-                    'prompt': prompt_template
-                }
-                
-                # High timeout (600s) because the browser agent needs time to type/upload/think
-                try:
-                    resp = requests.post(CUSTOM_API_URL, files=files, data=data, timeout=600)
+        while time.time() - start_time < 900: # 15 min timeout
+            try:
+                poll_resp = requests.get(poll_url, timeout=10)
+                if poll_resp.status_code == 200:
+                    job_data = poll_resp.json()
+                    status = job_data.get("status")
                     
-                    if resp.status_code == 200:
-                        ans = resp.json().get("answer", "")
-                        if ans and "error" not in ans.lower():
-                            transcript_text = ans
-                            break # Success!
-                        else:
-                            logger.warning(f"API returned empty/error on attempt {attempt+1}: {ans}")
-                    else:
-                        logger.warning(f"API HTTP {resp.status_code} on attempt {attempt+1}")
-                        
-                except Exception as e:
-                    logger.warning(f"API Connection error on attempt {attempt+1}: {e}")
-                
-                time.sleep(2 * (attempt + 1)) # Backoff
-
-        if transcript_text:
-            result["transcript"] = transcript_text
-            result["status"] = "✅ Success"
+                    if status == "completed":
+                        ans = job_data.get("result", {}).get("answer", "")
+                        result["transcript"] = ans
+                        result["status"] = "✅ Success"
+                        break
+                    elif status == "failed":
+                        raise Exception(f"Job failed: {job_data.get('error')}")
+                    
+                    # If queued/processing, wait
+                    time.sleep(3) 
+                else:
+                    time.sleep(3)
+            except Exception as e:
+                logger.warning(f"Polling error: {e}")
+                time.sleep(3)
         else:
-            result["status"] = "❌ Failed"
-            result["error"] = "Agent API failed after retries"
-            result["transcript"] = "Error: Could not retrieve transcript from Agent."
+            raise Exception("Polling timed out (15m)")
 
     except Exception as e:
-        logger.exception("Processing failed for row %s: %s", index, str(e))
-        result["transcript"] = f"SYSTEM ERROR: {str(e)}"
         result["status"] = "❌ Failed"
         result["error"] = str(e)
-
+        result["transcript"] = f"Error: {str(e)}"
+    
     finally:
-        # Cleanup local temp file
         if tmp_path and os.path.exists(tmp_path):
             try: os.remove(tmp_path)
             except: pass
@@ -354,228 +335,158 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str) -> Dict
     return result
 
 
-# --- RESULT MERGING & DISPLAY UTILS ---
+# --- UI HELPERS ---
 
-def merge_results_with_original(df_consolidated: pd.DataFrame, processed_results: list) -> pd.DataFrame:
-    """
-    Merges worker results back into the consolidated DataFrame.
-    """
-    results_df = pd.DataFrame(sorted(processed_results, key=lambda r: r["index"]))
-    cols_to_update = ["transcript", "status", "error"]
-    
-    df_base = df_consolidated.drop(columns=[c for c in cols_to_update if c in df_consolidated.columns])
-    merged = df_base.merge(results_df[["index"] + cols_to_update], left_index=True, right_on="index", how="left")
-    
-    if "index" in merged.columns:
-        merged = merged.drop(columns=["index"])
-    
-    return merged
+def merge_results_with_original(df_orig: pd.DataFrame, results: list) -> pd.DataFrame:
+    res_df = pd.DataFrame(sorted(results, key=lambda r: r["index"]))
+    cols = ["transcript", "status", "error"]
+    df_base = df_orig.drop(columns=[c for c in cols if c in df_orig.columns])
+    merged = df_base.merge(res_df[["index"] + cols], left_index=True, right_on="index", how="left")
+    return merged.drop(columns=["index"]) if "index" in merged.columns else merged
 
 def colorize_transcript_html(text: str) -> str:
     """
-    Format transcript text into color-coded HTML.
+    Converts transcript text into a beautiful chat interface.
     """
     if not isinstance(text, str) or not text.strip():
-        return "<div class='other-speech'>No transcript</div>"
+        return "<div class='chat-bubble other-bubble'>No transcript available</div>"
 
+    html_parts = []
     lines = text.splitlines()
-    html_output = ""
     
     for line in lines:
         clean = line.strip()
         if not clean: continue
         
-        escaped_line = html.escape(clean)
-        lc = clean.lower()
+        # Check for timestamps [0ms-1500ms]
+        # We can extract them if needed, or just include them in the text
         
-        if "agent:" in lc:
-            html_output += f"<div class='speaker1'>{escaped_line}</div>"
-        elif "customer:" in lc:
-            html_output += f"<div class='speaker2'>{escaped_line}</div>"
-        else:
-            html_output += f"<div class='other-speech'>{escaped_line}</div>"
+        lower_line = clean.lower()
+        escaped_text = html.escape(clean)
+        
+        # Determine Bubble Type
+        bubble_class = "other-bubble"
+        speaker_label = "System"
+        
+        if "agent:" in lower_line or "speaker 1:" in lower_line:
+            bubble_class = "agent-bubble"
+            speaker_label = "Agent"
+        elif "customer:" in lower_line or "speaker 2:" in lower_line:
+            bubble_class = "customer-bubble"
+            speaker_label = "Customer"
             
-    return f"<div>{html_output}</div>"
+        # Build HTML
+        html_parts.append(
+            f"""<div class='chat-bubble {bubble_class}'>
+                <span class='bubble-meta'>{speaker_label}</span>
+                {escaped_text}
+            </div>"""
+        )
+            
+    return "".join(html_parts)
 
 
-# --- MAIN APPLICATION ENTRY POINT ---
+# --- MAIN APP ---
 
 def main():
-    # Initialize Session State
-    if "processed_results" not in st.session_state:
-        st.session_state.processed_results = []
-    if "final_df" not in st.session_state:
-        st.session_state.final_df = pd.DataFrame()
+    if "final_df" not in st.session_state: st.session_state.final_df = pd.DataFrame()
 
-    # --- SIDEBAR CONFIG ---
     with st.sidebar:
         st.header("Configuration")
-        st.info(f"Agent Endpoint:\n{urlparse(CUSTOM_API_URL).hostname}")
+        st.info(f"API Endpoint:\n{urlparse(CUSTOM_API_URL).hostname}")
         
-        # Max workers slider
-        max_workers = st.slider("Concurrency (Threads)", min_value=1, max_value=128, value=4,
-                                help="Higher = faster, but ensure Cloud Run can handle the load.")
+        # Concurrency slider (Now safe to go higher!)
+        max_workers = st.slider("Threads", 1, 64, 12, help="Parallel jobs submitted to API.")
         
         st.divider()
-        
         language_mode = st.selectbox("Language", ["English (India)", "Hindi", "Mixed (Hinglish)"], index=2)
-        
-        theme_choice = st.radio("Theme", options=["Light", "Dark"], index=0, horizontal=True)
+        theme_choice = st.radio("Theme", ["Light", "Dark"], index=0, horizontal=True)
 
-    # Apply Theme Class
     theme_class = "dark-theme" if theme_choice == "Dark" else "light-theme"
     st.markdown(f"<div class='{theme_class}'>", unsafe_allow_html=True)
 
-    # --- FILE UPLOADER ---
     st.write("### 📂 Upload Call Data")
     uploaded_files = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], accept_multiple_files=True)
-
-    # Status Containers
+    
     progress_bar = st.empty()
     status_text = st.empty()
     result_placeholder = st.empty()
+    start_btn = st.button("🚀 Start Batch Processing", type="primary")
 
-    start_button = st.button("🚀 Start Batch Processing", type="primary")
-
-    # --- PROCESSING LOGIC ---
-    if start_button:
+    if start_btn:
         if not uploaded_files:
-            st.error("Please upload at least one Excel file.")
+            st.error("Upload a file first.")
             st.stop()
 
-        # 1. READ FILES
-        all_dfs = []
-        for file in uploaded_files:
-            try:
-                df_single = pd.read_excel(file)
-                all_dfs.append(df_single)
-            except Exception as e:
-                st.warning(f"Skipping {file.name}: {e}")
-                continue
+        all_dfs = [pd.read_excel(f) for f in uploaded_files]
+        df_consolidated = consolidate_data_by_mobile(pd.concat(all_dfs, ignore_index=True))
         
-        if not all_dfs:
-            st.stop()
-
-        raw_df = pd.concat(all_dfs, ignore_index=True)
-
-        # 2. CONSOLIDATE
-        status_text.info("Consolidating data by unique mobile number...")
-        df_consolidated = consolidate_data_by_mobile(raw_df)
+        prompt = build_prompt(language_mode)
+        total = len(df_consolidated)
         
-        prompt_template = build_prompt(language_mode)
-        total_rows = len(df_consolidated)
-        
-        status_text.info(f"Processing {total_rows} unique contacts with {max_workers} threads...")
+        status_text.info(f"Queuing {total} calls with {max_workers} threads...")
         progress_bar.progress(0.0)
-
+        
         processed_results = []
-        st.session_state.processed_results = []
-
-        # 3. EXECUTE
+        
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(process_single_row, idx, row, prompt_template): idx
-                for idx, row in df_consolidated.iterrows()
-            }
-
+            futures = {executor.submit(process_single_row, i, r, prompt): i for i, r in df_consolidated.iterrows()}
+            
             completed = 0
             for future in as_completed(futures):
-                res = future.result()
-                processed_results.append(res)
+                processed_results.append(future.result())
                 completed += 1
-                
-                # Update UI
-                progress_bar.progress(completed / total_rows)
-                status_text.markdown(f"Processed **{completed}/{total_rows}** unique contacts.")
+                progress_bar.progress(completed / total)
+                status_text.markdown(f"Processed **{completed}/{total}** calls.")
                 
                 # Live Preview
-                recent = sorted(processed_results, key=lambda r: r["index"])[-5:]
+                recent = sorted(processed_results, key=lambda x: x["index"])[-3:]
                 if recent:
                     result_placeholder.dataframe(
-                        pd.DataFrame(recent)[["mobile_number", "status", "transcript"]], 
+                        pd.DataFrame(recent)[["mobile_number", "status", "transcript"]],
                         hide_index=True
                     )
 
-        # 4. MERGE
-        final_df = merge_results_with_original(df_consolidated, processed_results)
-        st.session_state.final_df = final_df
-        status_text.success("Batch Processing Complete!")
+        st.session_state.final_df = merge_results_with_original(df_consolidated, processed_results)
+        status_text.success("Done!")
 
-    # --- RESULTS VIEWER ---
+    # --- VIEWER ---
     final_df = st.session_state.final_df
-
     if not final_df.empty:
         st.markdown("<hr/>", unsafe_allow_html=True)
         st.markdown("## 🎛️ Transcript Browser")
-
-        # Filters
-        col_a, col_b, col_c, col_d = st.columns([3, 1, 1, 1])
-        with col_a:
-            search_q = st.text_input("Search", placeholder="Search transcript, phone, or URL...")
-        with col_b:
-            status_sel = st.selectbox("Status", ["All", "Success", "Failed", "Skipped"])
-        with col_c:
-            speaker_sel = st.selectbox("Speaker", ["All", "Agent", "Customer"])
-        with col_d:
-            per_page = st.selectbox("Per page", [5, 10, 20, 50], index=1)
-
-        # Apply Filters
-        view_df = final_df.copy()
         
-        if status_sel != "All":
-            if status_sel == "Success":
-                view_df = view_df[view_df["status"].str.contains("Success", case=False, na=False)]
-            elif status_sel == "Failed":
-                view_df = view_df[view_df["status"].str.contains("Failed|Error", case=False, na=False)]
-            elif status_sel == "Skipped":
-                view_df = view_df[view_df["status"].str.contains("Skipped", case=False, na=False)]
-
-        if search_q.strip():
-            q = search_q.lower()
-            mask = (
-                view_df["transcript"].fillna("").str.lower().str.contains(q) |
-                view_df["mobile_number"].astype(str).str.lower().str.contains(q)
-            )
-            view_df = view_df[mask]
-
-        if speaker_sel != "All":
-            key = "agent:" if speaker_sel == "Agent" else "customer:"
-            view_df = view_df[view_df["transcript"].fillna("").str.lower().str.contains(key)]
-
-        total_items = len(view_df)
-        st.markdown(f"**Showing {total_items} result(s)**")
-
-        # Pagination
-        pages = max(1, math.ceil(total_items / per_page))
-        page_idx = st.number_input("Page", min_value=1, max_value=pages, value=1, step=1)
-        start = (page_idx - 1) * per_page
-        end = start + per_page
-        page_df = view_df.iloc[start:end]
-
-        # Export
-        out_buf = BytesIO()
-        view_df.to_excel(out_buf, index=False)
-        st.download_button(
-            "📥 Download Filtered Results",
-            data=out_buf.getvalue(),
-            file_name=f"transcripts_export_{int(time.time())}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        # Render Cards
-        for idx, row in page_df.iterrows():
-            mobile_display = row.get('mobile_number', 'Unknown')
-            status_display = row.get('status', '')
+        # Filters
+        c1, c2, c3 = st.columns([3, 1, 1])
+        search_txt = c1.text_input("Search")
+        status_filter = c2.selectbox("Status", ["All", "Success", "Failed", "Skipped"])
+        per_page = c3.selectbox("Per Page", [5, 10, 20], index=1)
+        
+        # Filter Logic
+        view = final_df.copy()
+        if status_filter != "All":
+            view = view[view["status"].str.contains(status_filter, case=False, na=False)]
+        if search_txt:
+            view = view[view.astype(str).apply(lambda x: x.str.contains(search_txt, case=False).any(), axis=1)]
             
-            with st.expander(f"{mobile_display} — {status_display}", expanded=False):
-                url_val = html.escape(str(row.get('recording_url', 'None')))
-                st.markdown(f"<div class='meta-row'><b>URL:</b> {url_val}</div>", unsafe_allow_html=True)
-                
-                transcript_html = colorize_transcript_html(row.get("transcript", ""))
-                st.markdown(f"<div class='transcript-box'>{transcript_html}</div>", unsafe_allow_html=True)
-                
-                if row.get("error"):
-                    st.error(f"Error: {row.get('error')}")
+        # Pagination
+        total_items = len(view)
+        st.caption(f"Showing {total_items} results")
+        page_current = st.number_input("Page", 1, max(1, math.ceil(total_items/per_page)), 1)
+        
+        # Export
+        output = BytesIO()
+        view.to_excel(output, index=False)
+        st.download_button("📥 Download Excel", output.getvalue(), "transcripts.xlsx")
+        
+        # Render
+        start = (page_current - 1) * per_page
+        for _, row in view.iloc[start : start + per_page].iterrows():
+            with st.expander(f"{row['mobile_number']} — {row['status']}"):
+                st.markdown(f"**URL:** `{row['recording_url']}`")
+                html_view = colorize_transcript_html(row.get("transcript", ""))
+                st.markdown(f"<div class='transcript-box'>{html_view}</div>", unsafe_allow_html=True)
+                if row.get("error"): st.error(row["error"])
 
     st.markdown("</div>", unsafe_allow_html=True)
 
