@@ -1,9 +1,10 @@
-# app.py — COMPLETE BATCH TRANSCRIBER (ASYNC POLLING + CHAT UI)
+# app.py — COMPLETE BATCH TRANSCRIBER (ASYNC HEADER + CHAT UI)
 # -----------------------------------------------------------------------------
 # FEATURES:
-# 1. ASYNC ARCHITECTURE: Submits Job -> Polls Status (Solves 429 Errors).
-# 2. CHAT UI: Modern, color-coded bubbles for easy reading.
-# 3. ROBUSTNESS: Automatic retries, MIME detection, Resumable logic.
+# 1. ASYNC HEADER: Sends 'x-async-mode: true' to trigger job queueing.
+# 2. ROBUST POLLING: Submits -> Gets Job ID -> Polls for completion.
+# 3. CHAT UI: Modern, color-coded bubbles for easy reading.
+# 4. DATA LOGIC: Unique mobile handling, Resumable uploads.
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -278,14 +279,16 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str) -> Dict
         if expected_size and os.path.getsize(tmp_path) < int(expected_size):
             raise Exception("Incomplete download")
 
-        # 2. SUBMIT JOB (Async)
+        # 2. SUBMIT JOB (Async Header Added)
         job_id = None
         with open(tmp_path, "rb") as f:
             files = {'file': (f"audio{ext}", f, mime)}
             data = {'provider': 'gemini', 'prompt': prompt_template}
+            # CRITICAL: Send the header to enable Async Mode on the server
+            headers = {'x-async-mode': 'true'}
             
             # This returns instantly (202 Accepted)
-            sub_resp = requests.post(CUSTOM_API_URL, files=files, data=data, timeout=30)
+            sub_resp = requests.post(CUSTOM_API_URL, files=files, data=data, headers=headers, timeout=30)
             
             if sub_resp.status_code == 202:
                 job_id = sub_resp.json().get("jobId")
@@ -295,7 +298,8 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str) -> Dict
         # 3. POLL FOR RESULTS
         # We poll the endpoint /ask/{job_id} until completion
         start_time = time.time()
-        poll_url = f"{CUSTOM_API_URL.rstrip('/ask')}/ask/{job_id}" # ensures correct path
+        # Ensure we strip trailing slash and append /ask/{jobId}
+        poll_url = f"{CUSTOM_API_URL.rstrip('/ask')}/ask/{job_id}" 
         
         while time.time() - start_time < 900: # 15 min timeout
             try:
@@ -358,9 +362,6 @@ def colorize_transcript_html(text: str) -> str:
         clean = line.strip()
         if not clean: continue
         
-        # Check for timestamps [0ms-1500ms]
-        # We can extract them if needed, or just include them in the text
-        
         lower_line = clean.lower()
         escaped_text = html.escape(clean)
         
@@ -395,7 +396,7 @@ def main():
         st.header("Configuration")
         st.info(f"API Endpoint:\n{urlparse(CUSTOM_API_URL).hostname}")
         
-        # Concurrency slider (Now safe to go higher!)
+        # Concurrency slider (Safe to go higher now!)
         max_workers = st.slider("Threads", 1, 64, 12, help="Parallel jobs submitted to API.")
         
         st.divider()
