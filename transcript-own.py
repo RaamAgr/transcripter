@@ -200,7 +200,7 @@ SPEAKER RULES:
 2. Use EXACTLY these labels: 'Agent:', 'Customer:'.
 3. If unclear, fallback to 'Speaker 1:', 'Speaker 2:'.
 
-FORMAT:
+STRICT OUTPUT FORMAT:
 [0ms-1500ms] Agent: Hello sir.
 [1500ms-3000ms] Customer: Hi I need help.
 
@@ -208,7 +208,8 @@ LANGUAGE:
 - Hindi words in Hinglish (Latin script). NO Devanagari.
 - Context: {language_label}
 
-Return ONLY the transcript.
+MOST IMPORTANT
+Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT
 """
 
 
