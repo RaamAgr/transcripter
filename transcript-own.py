@@ -1,10 +1,11 @@
-# app.py — COMPLETE BATCH TRANSCRIBER (ASYNC HEADER + CHAT UI)
+# app.py — COMPLETE BATCH TRANSCRIBER (ASYNC HEADER + CHAT UI + AUTH)
 # -----------------------------------------------------------------------------
 # FEATURES:
 # 1. ASYNC HEADER: Sends 'x-async-mode: true' to trigger job queueing.
-# 2. ROBUST POLLING: Submits -> Gets Job ID -> Polls for completion.
-# 3. CHAT UI: Modern, color-coded bubbles for easy reading.
-# 4. DATA LOGIC: Unique mobile handling, Resumable uploads.
+# 2. AUTHENTICATION: Requires 'x-api-key' for both submission and polling.
+# 3. ROBUST POLLING: Submits -> Gets Job ID -> Polls for completion.
+# 4. CHAT UI: Modern, color-coded bubbles for easy reading.
+# 5. DATA LOGIC: Unique mobile handling, Resumable uploads.
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -160,7 +161,7 @@ def make_request_with_retry(method: str, url: str, max_retries: int = 5, backoff
             logger.warning(f"Network error: {e}. Retrying...")
             last_exc = e
             _sleep_with_jitter(backoff_base, attempt)
-    
+     
     if last_exc: raise last_exc
     raise Exception("make_request_with_retry failed")
 
@@ -175,17 +176,17 @@ COMMON_AUDIO_MIME = {
 def detect_extension_and_mime(url_path: str, header_content_type: Optional[str]) -> (str, str):
     _, ext = os.path.splitext(url_path or "")
     ext = ext.lower()
-    
+     
     if ext and ext in COMMON_AUDIO_MIME:
         return ext, COMMON_AUDIO_MIME[ext]
-    
+     
     if header_content_type:
         ctype = header_content_type.split(";")[0].strip()
         for k, v in COMMON_AUDIO_MIME.items():
             if v == ctype: return k, ctype
         guessed = mimetypes.guess_extension(ctype)
         if guessed: return guessed.lower(), ctype
-            
+             
     return ".mp3", "audio/mpeg"
 
 
@@ -219,7 +220,7 @@ def consolidate_data_by_mobile(df: pd.DataFrame) -> pd.DataFrame:
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.sort_values(by=['mobile_number', 'date'], ascending=[True, False])
-    
+     
     unique_mobiles = df['mobile_number'].unique()
     final_rows = []
 
@@ -240,13 +241,13 @@ def consolidate_data_by_mobile(df: pd.DataFrame) -> pd.DataFrame:
             row['error'] = 'No recording found'
         
         final_rows.append(row)
-    
+     
     return pd.DataFrame(final_rows).reset_index(drop=True)
 
 
 # --- CORE: ASYNC WORKER (SUBMIT -> POLL) ---
 
-def process_single_row(index: int, row: pd.Series, prompt_template: str) -> Dict[str, Any]:
+def process_single_row(index: int, row: pd.Series, prompt_template: str, api_key: str) -> Dict[str, Any]:
     mobile = str(row.get("mobile_number", "Unknown"))
     result = {
         "index": index, 
@@ -280,19 +281,24 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str) -> Dict
         if expected_size and os.path.getsize(tmp_path) < int(expected_size):
             raise Exception("Incomplete download")
 
-        # 2. SUBMIT JOB (Async Header Added)
+        # 2. SUBMIT JOB (Async Header + Auth)
         job_id = None
         with open(tmp_path, "rb") as f:
             files = {'file': (f"audio{ext}", f, mime)}
             data = {'provider': 'gemini', 'prompt': prompt_template}
-            # CRITICAL: Send the header to enable Async Mode on the server
-            headers = {'x-async-mode': 'true'}
+            # CRITICAL: Send Async Mode Header AND API Key
+            headers = {
+                'x-async-mode': 'true',
+                'x-api-key': api_key
+            }
             
             # This returns instantly (202 Accepted)
             sub_resp = requests.post(CUSTOM_API_URL, files=files, data=data, headers=headers, timeout=30)
             
             if sub_resp.status_code == 202:
                 job_id = sub_resp.json().get("jobId")
+            elif sub_resp.status_code == 401 or sub_resp.status_code == 403:
+                raise Exception("Authentication Failed: Check API Key")
             else:
                 raise Exception(f"Submission Error {sub_resp.status_code}: {sub_resp.text}")
 
@@ -301,10 +307,11 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str) -> Dict
         start_time = time.time()
         # Ensure we strip trailing slash and append /ask/{jobId}
         poll_url = f"{CUSTOM_API_URL.rstrip('/ask')}/ask/{job_id}" 
+        poll_headers = {'x-api-key': api_key}
         
         while time.time() - start_time < 900: # 15 min timeout
             try:
-                poll_resp = requests.get(poll_url, timeout=10)
+                poll_resp = requests.get(poll_url, headers=poll_headers, timeout=10)
                 if poll_resp.status_code == 200:
                     job_data = poll_resp.json()
                     status = job_data.get("status")
@@ -320,9 +327,12 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str) -> Dict
                     # If queued/processing, wait
                     time.sleep(3) 
                 else:
+                    if poll_resp.status_code in [401, 403]:
+                        raise Exception("Auth Error during Polling")
                     time.sleep(3)
             except Exception as e:
                 logger.warning(f"Polling error: {e}")
+                if "Auth Error" in str(e): raise e
                 time.sleep(3)
         else:
             raise Exception("Polling timed out (15m)")
@@ -331,7 +341,7 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str) -> Dict
         result["status"] = "❌ Failed"
         result["error"] = str(e)
         result["transcript"] = f"Error: {str(e)}"
-    
+     
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try: os.remove(tmp_path)
@@ -358,7 +368,7 @@ def colorize_transcript_html(text: str) -> str:
 
     html_parts = []
     lines = text.splitlines()
-    
+     
     for line in lines:
         clean = line.strip()
         if not clean: continue
@@ -397,7 +407,10 @@ def main():
         st.header("Configuration")
         st.info(f"API Endpoint:\n{urlparse(CUSTOM_API_URL).hostname}")
         
-        # Concurrency slider (Safe to go higher now!)
+        # API Key Input
+        api_key = st.text_input("API Key", type="password", help="Enter the x-api-key for authentication")
+        
+        # Concurrency slider
         max_workers = st.slider("Threads", 1, 64, 12, help="Parallel jobs submitted to API.")
         
         st.divider()
@@ -409,7 +422,7 @@ def main():
 
     st.write("### 📂 Upload Call Data")
     uploaded_files = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], accept_multiple_files=True)
-    
+     
     progress_bar = st.empty()
     status_text = st.empty()
     result_placeholder = st.empty()
@@ -418,6 +431,10 @@ def main():
     if start_btn:
         if not uploaded_files:
             st.error("Upload a file first.")
+            st.stop()
+            
+        if not api_key:
+            st.error("🔒 API Key is required to proceed.")
             st.stop()
 
         all_dfs = [pd.read_excel(f) for f in uploaded_files]
@@ -431,8 +448,9 @@ def main():
         
         processed_results = []
         
+        # Pass api_key to the worker function
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(process_single_row, i, r, prompt): i for i, r in df_consolidated.iterrows()}
+            futures = {executor.submit(process_single_row, i, r, prompt, api_key): i for i, r in df_consolidated.iterrows()}
             
             completed = 0
             for future in as_completed(futures):
