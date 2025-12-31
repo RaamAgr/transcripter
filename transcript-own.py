@@ -1,11 +1,11 @@
-# app.py — COMPLETE BATCH TRANSCRIBER (ASYNC HEADER + CHAT UI + AUTH)
+# app.py — COMPLETE BATCH TRANSCRIBER (ASYNC HEADER + CHAT UI + AUTH FIXED)
 # -----------------------------------------------------------------------------
 # FEATURES:
 # 1. ASYNC HEADER: Sends 'x-async-mode: true' to trigger job queueing.
 # 2. AUTHENTICATION: Requires 'x-api-key' for both submission and polling.
 # 3. ROBUST POLLING: Submits -> Gets Job ID -> Polls for completion.
 # 4. CHAT UI: Modern, color-coded bubbles for easy reading.
-# 5. DATA LOGIC: Unique mobile handling, Resumable uploads.
+# 5. ERROR HANDLING: Detects HTML login pages masked as 200 OK responses.
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -152,6 +152,7 @@ def make_request_with_retry(method: str, url: str, max_retries: int = 5, backoff
     for attempt in range(max_retries):
         try:
             resp = requests.request(method, url, timeout=timeout, **kwargs)
+            # Retry on 429 or 5xx errors
             if resp.status_code == 429 or (500 <= resp.status_code < 600):
                 logger.warning(f"Transient HTTP {resp.status_code}. Retrying...")
                 _sleep_with_jitter(backoff_base, attempt)
@@ -292,50 +293,75 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str, api_key
                 'x-api-key': api_key
             }
             
-            # This returns instantly (202 Accepted)
-            sub_resp = requests.post(CUSTOM_API_URL, files=files, data=data, headers=headers, timeout=30)
+            # Use allow_redirects=False to catch if we are being sent to a login page
+            sub_resp = requests.post(CUSTOM_API_URL, files=files, data=data, headers=headers, timeout=30, allow_redirects=True)
             
-            if sub_resp.status_code == 202:
-                job_id = sub_resp.json().get("jobId")
-            elif sub_resp.status_code == 401 or sub_resp.status_code == 403:
+            # --- ROBUST RESPONSE HANDLING ---
+            # Check if response is HTML (Login Page) disguised as 200 OK
+            content_type = sub_resp.headers.get("Content-Type", "").lower()
+            if "text/html" in content_type:
+                raise Exception("Auth Failed: Server returned Login Page instead of JSON. Check API Key.")
+
+            # Accept 200 (OK) or 202 (Accepted) as success if they contain a Job ID
+            if sub_resp.status_code in [200, 202]:
+                try:
+                    resp_json = sub_resp.json()
+                    job_id = resp_json.get("jobId")
+                    if not job_id:
+                         # Fallback: maybe it returned the answer directly?
+                         if "result" in resp_json:
+                             result["transcript"] = resp_json["result"].get("answer", "")
+                             result["status"] = "✅ Success (Direct)"
+                             return result
+                         else:
+                             raise Exception(f"No Job ID in response: {str(resp_json)}")
+                except json.JSONDecodeError:
+                    raise Exception(f"Invalid JSON response: {sub_resp.text[:100]}")
+            
+            elif sub_resp.status_code in [401, 403]:
                 raise Exception("Authentication Failed: Check API Key")
             else:
-                raise Exception(f"Submission Error {sub_resp.status_code}: {sub_resp.text}")
+                raise Exception(f"Submission Error {sub_resp.status_code}: {sub_resp.text[:200]}")
 
-        # 3. POLL FOR RESULTS
-        # We poll the endpoint /ask/{job_id} until completion
-        start_time = time.time()
-        # Ensure we strip trailing slash and append /ask/{jobId}
-        poll_url = f"{CUSTOM_API_URL.rstrip('/ask')}/ask/{job_id}" 
-        poll_headers = {'x-api-key': api_key}
-        
-        while time.time() - start_time < 900: # 15 min timeout
-            try:
-                poll_resp = requests.get(poll_url, headers=poll_headers, timeout=10)
-                if poll_resp.status_code == 200:
-                    job_data = poll_resp.json()
-                    status = job_data.get("status")
+        # 3. POLL FOR RESULTS (If we got a Job ID)
+        if job_id:
+            start_time = time.time()
+            # Ensure we strip trailing slash and append /ask/{jobId}
+            poll_url = f"{CUSTOM_API_URL.rstrip('/ask')}/ask/{job_id}" 
+            poll_headers = {'x-api-key': api_key}
+            
+            while time.time() - start_time < 900: # 15 min timeout
+                try:
+                    poll_resp = requests.get(poll_url, headers=poll_headers, timeout=10)
                     
-                    if status == "completed":
-                        ans = job_data.get("result", {}).get("answer", "")
-                        result["transcript"] = ans
-                        result["status"] = "✅ Success"
-                        break
-                    elif status == "failed":
-                        raise Exception(f"Job failed: {job_data.get('error')}")
+                    # Check for Auth Fail during polling
+                    if poll_resp.headers.get("Content-Type", "").startswith("text/html"):
+                         raise Exception("Auth Failed during polling (Login Page returned)")
                     
-                    # If queued/processing, wait
-                    time.sleep(3) 
-                else:
-                    if poll_resp.status_code in [401, 403]:
-                        raise Exception("Auth Error during Polling")
+                    if poll_resp.status_code == 200:
+                        job_data = poll_resp.json()
+                        status = job_data.get("status")
+                        
+                        if status == "completed":
+                            ans = job_data.get("result", {}).get("answer", "")
+                            result["transcript"] = ans
+                            result["status"] = "✅ Success"
+                            break
+                        elif status == "failed":
+                            raise Exception(f"Job failed: {job_data.get('error')}")
+                        
+                        # If queued/processing, wait
+                        time.sleep(3) 
+                    else:
+                        if poll_resp.status_code in [401, 403]:
+                            raise Exception("Auth Error during Polling")
+                        time.sleep(3)
+                except Exception as e:
+                    logger.warning(f"Polling error: {e}")
+                    if "Auth" in str(e): raise e
                     time.sleep(3)
-            except Exception as e:
-                logger.warning(f"Polling error: {e}")
-                if "Auth Error" in str(e): raise e
-                time.sleep(3)
-        else:
-            raise Exception("Polling timed out (15m)")
+            else:
+                raise Exception("Polling timed out (15m)")
 
     except Exception as e:
         result["status"] = "❌ Failed"
