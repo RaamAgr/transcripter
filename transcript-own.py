@@ -1,11 +1,12 @@
-# app.py — COMPLETE BATCH TRANSCRIBER (ASYNC HEADER + CHAT UI + AUTH FIXED)
+# app.py — COMPLETE BATCH TRANSCRIBER (ASYNC HEADER + CHAT UI + AUTH FIXED + RAW JSON VIEW)
 # -----------------------------------------------------------------------------
 # FEATURES:
 # 1. ASYNC HEADER: Sends 'x-async-mode: true' to trigger job queueing.
-# 2. AUTHENTICATION: Requires 'x-api-key' for both submission and polling.
-# 3. ROBUST POLLING: Submits -> Gets Job ID -> Polls for completion.
-# 4. CHAT UI: Modern, color-coded bubbles for easy reading.
-# 5. ERROR HANDLING: Detects HTML login pages masked as 200 OK responses.
+# 2. NEW CHAT HEADER: Sends 'new-chat: true' to force fresh session context.
+# 3. AUTHENTICATION: Requires 'x-api-key' for both submission and polling.
+# 4. ROBUST POLLING: Submits -> Gets Job ID -> Polls for completion.
+# 5. CHAT UI: Modern, color-coded bubbles for easy reading.
+# 6. RAW INSPECTOR: View the raw JSON response via an info button.
 # -----------------------------------------------------------------------------
 
 import streamlit as st
@@ -162,7 +163,7 @@ def make_request_with_retry(method: str, url: str, max_retries: int = 5, backoff
             logger.warning(f"Network error: {e}. Retrying...")
             last_exc = e
             _sleep_with_jitter(backoff_base, attempt)
-     
+      
     if last_exc: raise last_exc
     raise Exception("make_request_with_retry failed")
 
@@ -177,17 +178,17 @@ COMMON_AUDIO_MIME = {
 def detect_extension_and_mime(url_path: str, header_content_type: Optional[str]) -> (str, str):
     _, ext = os.path.splitext(url_path or "")
     ext = ext.lower()
-     
+      
     if ext and ext in COMMON_AUDIO_MIME:
         return ext, COMMON_AUDIO_MIME[ext]
-     
+      
     if header_content_type:
         ctype = header_content_type.split(";")[0].strip()
         for k, v in COMMON_AUDIO_MIME.items():
             if v == ctype: return k, ctype
         guessed = mimetypes.guess_extension(ctype)
         if guessed: return guessed.lower(), ctype
-             
+              
     return ".mp3", "audio/mpeg"
 
 
@@ -221,7 +222,7 @@ def consolidate_data_by_mobile(df: pd.DataFrame) -> pd.DataFrame:
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.sort_values(by=['mobile_number', 'date'], ascending=[True, False])
-     
+      
     unique_mobiles = df['mobile_number'].unique()
     final_rows = []
 
@@ -242,7 +243,7 @@ def consolidate_data_by_mobile(df: pd.DataFrame) -> pd.DataFrame:
             row['error'] = 'No recording found'
         
         final_rows.append(row)
-     
+      
     return pd.DataFrame(final_rows).reset_index(drop=True)
 
 
@@ -256,7 +257,8 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str, api_key
         "recording_url": row.get("recording_url"),
         "transcript": row.get("transcript", ""), 
         "status": row.get("status", "Pending"), 
-        "error": row.get("error", None)
+        "error": row.get("error", None),
+        "raw_json": {}  # Stores raw API responses for inspection
     }
 
     if row.get("processing_action") == "SKIP":
@@ -282,15 +284,16 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str, api_key
         if expected_size and os.path.getsize(tmp_path) < int(expected_size):
             raise Exception("Incomplete download")
 
-        # 2. SUBMIT JOB (Async Header + Auth)
+        # 2. SUBMIT JOB (Async Header + Auth + New Chat)
         job_id = None
         with open(tmp_path, "rb") as f:
             files = {'file': (f"audio{ext}", f, mime)}
             data = {'provider': 'gemini', 'prompt': prompt_template}
-            # CRITICAL: Send Async Mode Header AND API Key
+            # CRITICAL: Send Async Mode Header AND API Key AND New Chat
             headers = {
                 'x-async-mode': 'true',
-                'x-api-key': api_key
+                'x-api-key': api_key,
+                'new-chat': 'true'  # Added as requested
             }
             
             # Use allow_redirects=False to catch if we are being sent to a login page
@@ -306,15 +309,18 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str, api_key
             if sub_resp.status_code in [200, 202]:
                 try:
                     resp_json = sub_resp.json()
+                    # Store submission response in raw_json
+                    result["raw_json"]["submission"] = resp_json
+                    
                     job_id = resp_json.get("jobId")
                     if not job_id:
-                         # Fallback: maybe it returned the answer directly?
-                         if "result" in resp_json:
-                             result["transcript"] = resp_json["result"].get("answer", "")
-                             result["status"] = "✅ Success (Direct)"
-                             return result
-                         else:
-                             raise Exception(f"No Job ID in response: {str(resp_json)}")
+                          # Fallback: maybe it returned the answer directly?
+                          if "result" in resp_json:
+                              result["transcript"] = resp_json["result"].get("answer", "")
+                              result["status"] = "✅ Success (Direct)"
+                              return result
+                          else:
+                              raise Exception(f"No Job ID in response: {str(resp_json)}")
                 except json.JSONDecodeError:
                     raise Exception(f"Invalid JSON response: {sub_resp.text[:100]}")
             
@@ -328,7 +334,11 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str, api_key
             start_time = time.time()
             # Ensure we strip trailing slash and append /ask/{jobId}
             poll_url = f"{CUSTOM_API_URL.rstrip('/ask')}/ask/{job_id}" 
-            poll_headers = {'x-api-key': api_key}
+            # Send API key and new-chat header during polling too
+            poll_headers = {
+                'x-api-key': api_key,
+                'new-chat': 'true'
+            }
             
             while time.time() - start_time < 900: # 15 min timeout
                 try:
@@ -340,6 +350,9 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str, api_key
                     
                     if poll_resp.status_code == 200:
                         job_data = poll_resp.json()
+                        # Store poll response in raw_json
+                        result["raw_json"]["latest_poll"] = job_data
+                        
                         status = job_data.get("status")
                         
                         if status == "completed":
@@ -367,7 +380,7 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str, api_key
         result["status"] = "❌ Failed"
         result["error"] = str(e)
         result["transcript"] = f"Error: {str(e)}"
-     
+      
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try: os.remove(tmp_path)
@@ -380,7 +393,9 @@ def process_single_row(index: int, row: pd.Series, prompt_template: str, api_key
 
 def merge_results_with_original(df_orig: pd.DataFrame, results: list) -> pd.DataFrame:
     res_df = pd.DataFrame(sorted(results, key=lambda r: r["index"]))
-    cols = ["transcript", "status", "error"]
+    # Columns to update
+    cols = ["transcript", "status", "error", "raw_json"]
+    # Drop existing cols if they exist to avoid conflict
     df_base = df_orig.drop(columns=[c for c in cols if c in df_orig.columns])
     merged = df_base.merge(res_df[["index"] + cols], left_index=True, right_on="index", how="left")
     return merged.drop(columns=["index"]) if "index" in merged.columns else merged
@@ -394,7 +409,7 @@ def colorize_transcript_html(text: str) -> str:
 
     html_parts = []
     lines = text.splitlines()
-     
+      
     for line in lines:
         clean = line.strip()
         if not clean: continue
@@ -448,7 +463,7 @@ def main():
 
     st.write("### 📂 Upload Call Data")
     uploaded_files = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], accept_multiple_files=True)
-     
+      
     progress_bar = st.empty()
     status_text = st.empty()
     result_placeholder = st.empty()
@@ -522,14 +537,26 @@ def main():
         
         # Export
         output = BytesIO()
-        view.to_excel(output, index=False)
+        # Drop raw_json before export to keep Excel clean
+        export_df = view.drop(columns=["raw_json"], errors='ignore')
+        export_df.to_excel(output, index=False)
         st.download_button("📥 Download Excel", output.getvalue(), "transcripts.xlsx")
         
         # Render
         start = (page_current - 1) * per_page
         for _, row in view.iloc[start : start + per_page].iterrows():
             with st.expander(f"{row['mobile_number']} — {row['status']}"):
-                st.markdown(f"**URL:** `{row['recording_url']}`")
+                
+                # --- NEW FEATURE: Info Button for Raw Response ---
+                col_info, col_link = st.columns([0.05, 0.95])
+                with col_info:
+                    with st.popover("ℹ️", help="View Raw API Response"):
+                        st.markdown("#### Raw API Data")
+                        st.json(row.get("raw_json", {}))
+                
+                with col_link:
+                    st.markdown(f"**URL:** `{row['recording_url']}`")
+                
                 html_view = colorize_transcript_html(row.get("transcript", ""))
                 st.markdown(f"<div class='transcript-box'>{html_view}</div>", unsafe_allow_html=True)
                 if row.get("error"): st.error(row["error"])
