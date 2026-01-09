@@ -397,27 +397,35 @@ def build_prompt(language_label: str) -> str:
 # Return ONLY the transcript. No explanation.
 # """                                                                                 
 
+#     return f"""
+# Transcribe this call in Hindi and English exactly as spoken.
+
+# SPEAKER RULES:
+# 1. Identify 'Agent:' vs 'Customer:' contextually.
+# 2. Use EXACTLY these labels: 'Agent:', 'Customer:'.
+# 3. If unclear, fallback to 'Speaker 1:', 'Speaker 2:'.
+
+# STRICT OUTPUT FORMAT:
+# [0ms-1500ms] Agent: Hello sir.
+# [1500ms-3000ms] Customer: Hi I need help.
+
+# LANGUAGE:
+# - Hindi words in Hinglish (Latin script). NO Devanagari.
+# - Context: {language_label}
+
+# MOST IMPORTANT
+# Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT
+# """                             
+                                    
     return f"""
-Transcribe this call in Hindi and English exactly as spoken.
 
-SPEAKER RULES:
-1. Identify 'Agent:' vs 'Customer:' contextually.
-2. Use EXACTLY these labels: 'Agent:', 'Customer:'.
-3. If unclear, fallback to 'Speaker 1:', 'Speaker 2:'.
+Please check if the bot pronounced nikoni or naikoni/naiconi/nyconi
 
-STRICT OUTPUT FORMAT:
-[0ms-1500ms] Agent: Hello sir.
-[1500ms-3000ms] Customer: Hi I need help.
-
-LANGUAGE:
-- Hindi words in Hinglish (Latin script). NO Devanagari.
-- Context: {language_label}
-
-MOST IMPORTANT
-Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT
-"""
+Strict Rule for output - Return "Naikoni" only if you find it spoke naikoni/naiconi/nyconi. Else say - Fine.
 
 
+    """
+ 
 
 # --- DATA PREPARATION LOGIC (MODIFIED: ALL ROWS) ---
 
