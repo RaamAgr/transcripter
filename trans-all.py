@@ -420,7 +420,7 @@ def build_prompt(language_label: str) -> str:
     return f"""
 
 Please check if the bot pronounced T A N or TN
-Strict Rule for output - Return "TN" only if you find it spoke TN. Else say - Fine.
+Strict Rule for output - Return "TN" only if you find it spoke TN clearly*. Else say - Fine.
 Be very very critical in this. Where ever you return TN, provide reasoning in 1 line as well including timestamps where the bot pronounced it incorrectly that is clearly visible.
 
 
