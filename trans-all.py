@@ -359,43 +359,64 @@ def build_prompt(language_label: str) -> str:
     """
     Constructs the system prompt for strict diarization and formatting.
     """
+#     return f"""
+# Transcribe this call in {language_label} exactly as spoken.
+
+# CRITICAL REQUIREMENTS — FOLLOW STRICTLY:
+# 1. EVERY line MUST start with exactly one of these labels:
+#    - Speaker 1:
+#    - Speaker 2:
+# 2. NEVER merge dialogue from two speakers in one line.
+# 3. If you are unsure who is speaking, GUESS — but DO NOT leave the speaker label blank.
+# 4. If the call sounds like a single-person monologue, STILL label every line as:
+#    Speaker 1: <text>
+# 5. Do NOT summarize or improve the language. Write EXACTLY what was said.
+# 6. Maintain natural turn-taking and break lines whenever the speaker changes.
+
+# TIMESTAMP RULES:
+# - Add timestamps at the start of EVERY line.
+# - Format MUST be: [0ms-2500ms]
+# - Use raw milliseconds only.
+# - No mm:ss format allowed.
+
+# LANGUAGE RULES:
+# - ALL Hindi words must be written in Hinglish (Latin script).
+# - NO Devanagari characters anywhere.
+# - English words should remain English.
+
+# STRICT FORMAT (DO NOT IGNORE):
+# - [timestamp] Speaker X: line of dialogue
+# - Only one speaker per line.
+# - Only one utterance per line.
+# - If two people speak at the same time, split into two separate lines with separate timestamps.
+
+# AUTO-CORRECTION:
+# - If any line is missing the speaker label, FIX IT and assign Speaker 1 or Speaker 2 based on your best guess.
+# - Do NOT output any unlabeled lines.
+
+# Return ONLY the transcript. No explanation.
+# """                                                                                 
+
     return f"""
-Transcribe this call in {language_label} exactly as spoken.
+Transcribe this call in Hindi and English exactly as spoken.
 
-CRITICAL REQUIREMENTS — FOLLOW STRICTLY:
-1. EVERY line MUST start with exactly one of these labels:
-   - Speaker 1:
-   - Speaker 2:
-2. NEVER merge dialogue from two speakers in one line.
-3. If you are unsure who is speaking, GUESS — but DO NOT leave the speaker label blank.
-4. If the call sounds like a single-person monologue, STILL label every line as:
-   Speaker 1: <text>
-5. Do NOT summarize or improve the language. Write EXACTLY what was said.
-6. Maintain natural turn-taking and break lines whenever the speaker changes.
+SPEAKER RULES:
+1. Identify 'Agent:' vs 'Customer:' contextually.
+2. Use EXACTLY these labels: 'Agent:', 'Customer:'.
+3. If unclear, fallback to 'Speaker 1:', 'Speaker 2:'.
 
-TIMESTAMP RULES:
-- Add timestamps at the start of EVERY line.
-- Format MUST be: [0ms-2500ms]
-- Use raw milliseconds only.
-- No mm:ss format allowed.
+STRICT OUTPUT FORMAT:
+[0ms-1500ms] Agent: Hello sir.
+[1500ms-3000ms] Customer: Hi I need help.
 
-LANGUAGE RULES:
-- ALL Hindi words must be written in Hinglish (Latin script).
-- NO Devanagari characters anywhere.
-- English words should remain English.
+LANGUAGE:
+- Hindi words in Hinglish (Latin script). NO Devanagari.
+- Context: {language_label}
 
-STRICT FORMAT (DO NOT IGNORE):
-- [timestamp] Speaker X: line of dialogue
-- Only one speaker per line.
-- Only one utterance per line.
-- If two people speak at the same time, split into two separate lines with separate timestamps.
-
-AUTO-CORRECTION:
-- If any line is missing the speaker label, FIX IT and assign Speaker 1 or Speaker 2 based on your best guess.
-- Do NOT output any unlabeled lines.
-
-Return ONLY the transcript. No explanation.
+MOST IMPORTANT
+Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT
 """
+
 
 
 # --- DATA PREPARATION LOGIC (MODIFIED: ALL ROWS) ---
