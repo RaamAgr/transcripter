@@ -29,7 +29,7 @@ from typing import Optional, Dict, Any
 # --- CONFIGURATION ---
 BASE_URL = "https://generativelanguage.googleapis.com"
 UPLOAD_URL = "https://generativelanguage.googleapis.com/upload/v1beta/files"
-MODEL_NAME = "gemini-2.5-flash" 
+MODEL_NAME = "gemini-3-flash-preview" 
 
 # Streaming download chunk size (8KB)
 DOWNLOAD_CHUNK_SIZE = 8192
@@ -422,6 +422,7 @@ def build_prompt(language_label: str) -> str:
 Please check if the bot pronounced nikoni or naikoni/naiconi/nyconi
 
 Strict Rule for output - Return "Naikoni" only if you find it spoke naikoni/naiconi/nyconi. Else say - Fine.
+Be very very critical in this. Where ever you return Naikoni, provide reasoning in 1 line as well including timestamps where the bot pronounced it incorrectly that is clearly visible.
 
 
     """
