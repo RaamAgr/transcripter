@@ -397,34 +397,34 @@ def build_prompt(language_label: str) -> str:
 # Return ONLY the transcript. No explanation.
 # """                                                                                 
 
-#     return f"""
-# Transcribe this call in Hindi and English exactly as spoken.
-
-# SPEAKER RULES:
-# 1. Identify 'Agent:' vs 'Customer:' contextually.
-# 2. Use EXACTLY these labels: 'Agent:', 'Customer:'.
-# 3. If unclear, fallback to 'Speaker 1:', 'Speaker 2:'.
-
-# STRICT OUTPUT FORMAT:
-# [0ms-1500ms] Agent: Hello sir.
-# [1500ms-3000ms] Customer: Hi I need help.
-
-# LANGUAGE:
-# - Hindi words in Hinglish (Latin script). NO Devanagari.
-# - Context: {language_label}
-
-# MOST IMPORTANT
-# Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT
-# """                             
-                                    
     return f"""
+Transcribe this call in Hindi and English exactly as spoken.
 
-Please check if the bot pronounced T A N or TN
-Strict Rule for output - Return "TN" only if you find it spoke TN clearly*. Else say - Fine.
-Be very very critical in this. Where ever you return TN, provide reasoning in 1 line as well including timestamps where the bot pronounced it incorrectly that is clearly visible.
+SPEAKER RULES:
+1. Identify 'Agent:' vs 'Customer:' contextually.
+2. Use EXACTLY these labels: 'Agent:', 'Customer:'.
+3. If unclear, fallback to 'Speaker 1:', 'Speaker 2:'.
+
+STRICT OUTPUT FORMAT:
+[0ms-1500ms] Agent: Hello sir.
+[1500ms-3000ms] Customer: Hi I need help.
+
+LANGUAGE:
+- Hindi words in Hinglish (Latin script). NO Devanagari.
+- Context: {language_label}
+
+MOST IMPORTANT
+Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT
+"""                             
+                                    
+#     return f"""
+
+# Please check if the bot pronounced T A N or TN
+# Strict Rule for output - Return "TN" only if you find it spoke TN clearly*. Else say - Fine.
+# Be very very critical in this. Where ever you return TN, provide reasoning in 1 line as well including timestamps where the bot pronounced it incorrectly that is clearly visible.
 
 
-    """
+#     """    
  
 
 # --- DATA PREPARATION LOGIC (MODIFIED: ALL ROWS) ---
