@@ -407,14 +407,15 @@ SPEAKER RULES:
 
 STRICT OUTPUT FORMAT:
 [0ms-1500ms] Agent: Hello sir.
-[1500ms-3000ms] Customer: Hi I need help.
+[1800ms-3000ms] Customer: Hi I need help.
 
 LANGUAGE:
 - Hindi words in Hinglish (Latin script). NO Devanagari.
 - Context: {language_label}
 
 MOST IMPORTANT
-Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT
+- The timestamps of the said lines should be the actual ones and not just made up.
+- Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT
 """                             
                                     
 #     return f"""
