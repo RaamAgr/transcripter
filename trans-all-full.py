@@ -32,8 +32,8 @@ from typing import Optional, Dict, Any
 # --- CONFIGURATION ---
 BASE_URL = "https://generativelanguage.googleapis.com"
 UPLOAD_URL = "https://generativelanguage.googleapis.com/upload/v1beta/files"
-# NOTE: Using "gemini-2.5-flash" for speed and stability.
-MODEL_NAME = "gemini-2.5-flash" 
+# NOTE: Using "gemini-3-flash-preview" for speed and stability.
+MODEL_NAME = "gemini-3-flash-preview" 
 
 # Streaming download chunk size (8KB)
 DOWNLOAD_CHUNK_SIZE = 8192
