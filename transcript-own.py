@@ -197,6 +197,7 @@ def detect_extension_and_mime(url_path: str, header_content_type: Optional[str])
 def build_prompt(language_label: str) -> str:
     return f"""
 Transcribe this call in Hindi and English exactly as spoken.
+HAVE PROPER LINE BREAKS IN CUSTOMER AND AGENT ALWAYS. line must start from a new line when agent or customer speaks in the output
 
 SPEAKER RULES:
 1. Identify 'Agent:' vs 'Customer:' contextually.
