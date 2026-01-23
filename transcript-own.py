@@ -212,7 +212,7 @@ LANGUAGE:
 - Context: {language_label}
 
 MOST IMPORTANT
-Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT
+Return ONLY the transcript and ask NO QUESTION and no other text, JUST THE TRANSCRIPT AND HAVE PROPER LINE BREAKS IN CUSTOMER AND AGENT ALWAYS
 """
 
 
