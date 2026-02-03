@@ -28,7 +28,7 @@ from typing import Optional, Dict, Any
 
 # --- CONFIGURATION ---
 # Your deployed Cloud Run Agent Endpoint
-CUSTOM_API_URL = "https://united-accommodate-width-activated.trycloudflare.com/ask"
+CUSTOM_API_URL = "https://tulsa-intervention-stranger-subsidiary.trycloudflare.com/ask"
 
 # Streaming download chunk size (8KB)
 DOWNLOAD_CHUNK_SIZE = 8192
